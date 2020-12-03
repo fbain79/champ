@@ -328,7 +328,7 @@ def determine_sequences_of_read_names(min_len, max_len, log_p_struct, fastq_file
                     read_names_given_seq[seq].append(str(rec1.id))
                 else:
                     discarded += 1
-        if else:
+        else:
             for i, (rec1, rec2) in enumerate(
                     itertools.izip(parse_fastq_lines(fpath1),
                                    parse_fastq_lines(fpath2))
