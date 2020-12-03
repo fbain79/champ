@@ -14,6 +14,10 @@ import subprocess
 import yaml
 import shlex
 
+timing = False
+if timing:
+    import tqdm
+
 log = logging.getLogger(__name__)
 
 
@@ -62,7 +66,7 @@ def main(clargs):
         write_read_names_by_sequence(read_names_given_seq, os.path.join(clargs.output_directory, 'read_names_by_seq.txt'))
 
     if not read_names_given_seq:
-    	 #We already generated read names by seq in a previous run and aren't recreating them this time,
+       #We already generated read names by seq in a previous run and aren't recreating them this time,
          #so we need to load them from disk
         with open(os.path.join(clargs.output_directory, "read_names_by_seq.txt")) as f:
             read_names_given_seq = {}
@@ -84,15 +88,25 @@ def main(clargs):
             targets = yaml.load(f)
 
         log.info("Creating perfect target read name files.")
-        for target_name, perfect_read_names in determine_perfect_target_reads(targets, read_names_given_seq):
-            formatted_name = 'perfect_target_%s' % target_name.replace('-', '_').lower()
-            write_read_names(perfect_read_names, formatted_name, clargs.output_directory, usable_read)
+        if timing:
+            for target_name, perfect_read_names in tqdm.tqdm(determine_perfect_target_reads(targets, read_names_given_seq)):
+                formatted_name = 'perfect_target_%s' % target_name.replace('-', '_').lower()
+                write_read_names(perfect_read_names, formatted_name, clargs.output_directory, usable_read)
+        else: 
+            for target_name, perfect_read_names in determine_perfect_target_reads(targets, read_names_given_seq):
+                formatted_name = 'perfect_target_%s' % target_name.replace('-', '_').lower()
+                write_read_names(perfect_read_names, formatted_name, clargs.output_directory, usable_read)
 
         # find imperfect usable target reads
         log.info("Creating target read name files.")
-        for target_name, read_names in determine_target_reads(targets, read_names_given_seq):
-            formatted_name = 'target_%s' % target_name.replace('-', '_').lower()
-            write_read_names(read_names, formatted_name, clargs.output_directory, usable_read)
+        if timing:
+            for target_name, read_names in tqdm.tqdm(determine_target_reads(targets, read_names_given_seq)):
+                formatted_name = 'target_%s' % target_name.replace('-', '_').lower()
+                write_read_names(read_names, formatted_name, clargs.output_directory, usable_read)
+        else:
+            for target_name, read_names in determine_target_reads(targets, read_names_given_seq):
+                formatted_name = 'target_%s' % target_name.replace('-', '_').lower()
+                write_read_names(read_names, formatted_name, clargs.output_directory, usable_read)
 
     if clargs.phix_bowtie:
         # This function aligns the NGS Fastq sequences with a reference genome using bowtie2.
@@ -102,8 +116,8 @@ def main(clargs):
         read_names = find_reads_using_bamfile(clargs.phix_bowtie, fastq_files, clargs.single_read)
         write_read_names(read_names, 'phix', clargs.output_directory, usable_read)
 
-	#Saves the names of every read in the Fastq files to a text file
-	log.info("Parsing and saving all read names to disk.")
+    #Saves the names of every read in the Fastq files to a text file
+    log.info("Parsing and saving all read names to disk.")
     write_all_read_names(fastq_files, os.path.join(clargs.output_directory, 'all_read_names.txt'), usable_read, clargs.single_read)
 
 
@@ -223,16 +237,16 @@ def rand_seq(seq_len):
 
 
 def determine_target_reads(targets, read_names_given_seq):
-	target_len = 0
+
+    target_len = 0
     for target_name, target_sequence in targets.items():
-    	if len(target_sequence) != target_len:
-    		max_edit_dist = get_max_edit_dist(target_sequence)
-    		target_len = len(target_sequence)
+        if len(target_sequence) != target_len:
+            max_edit_dist = get_max_edit_dist(target_sequence)
+            target_len = len(target_sequence)
         for seq, read_names in read_names_given_seq.items():
             if len(seq) > len(target_sequence):
-
                 min_edit_dist = min(editdistance.eval(target_sequence, seq[i:i + len(target_sequence)])
-                                    for i in xrange(len(seq) - len(target_sequence)))
+                                      for i in xrange(len(seq) - len(target_sequence)))
             else:
                 min_edit_dist = editdistance.eval(target_sequence, seq)
             if min_edit_dist <= max_edit_dist:
@@ -301,18 +315,32 @@ def determine_sequences_of_read_names(min_len, max_len, log_p_struct, fastq_file
         log.debug('{}, {}'.format(*map(os.path.basename, (fpath1, fpath2))))
         discarded = 0
         total = 0
-        for i, (rec1, rec2) in enumerate(
-                itertools.izip(parse_fastq_lines(fpath1),
-                               parse_fastq_lines(fpath2))
-        ): # rec1, rec2 are corresponding paired sequences from Read 1/2 sequence
-            if not usable_read(rec1.id):
-                continue
-            total += 1
-            seq = classify_seq(rec1, rec2, min_len, max_len, max_ham_dists, log_p_struct)
-            if seq:
-                read_names_given_seq[seq].append(str(rec1.id))
-            else:
-                discarded += 1
+        if timing:
+            for i, (rec1, rec2) in tqdm.tqdm(enumerate(
+                    itertools.izip(parse_fastq_lines(fpath1),
+                                   parse_fastq_lines(fpath2)))
+            ): # rec1, rec2 are corresponding paired sequences from Read 1/2 sequence
+                if not usable_read(rec1.id):
+                    continue
+                total += 1
+                seq = classify_seq(rec1, rec2, min_len, max_len, max_ham_dists, log_p_struct)
+                if seq:
+                    read_names_given_seq[seq].append(str(rec1.id))
+                else:
+                    discarded += 1
+        if else:
+            for i, (rec1, rec2) in enumerate(
+                    itertools.izip(parse_fastq_lines(fpath1),
+                                   parse_fastq_lines(fpath2))
+            ): # rec1, rec2 are corresponding paired sequences from Read 1/2 sequence
+                if not usable_read(rec1.id):
+                    continue
+                total += 1
+                seq = classify_seq(rec1, rec2, min_len, max_len, max_ham_dists, log_p_struct)
+                if seq:
+                    read_names_given_seq[seq].append(str(rec1.id))
+                else:
+                    discarded += 1
         found = total - discarded
         log.debug('Found {} of {} ({:.1f}%)'.format(found, total, 100 * found / float(total)))
     return read_names_given_seq
