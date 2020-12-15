@@ -1,6 +1,7 @@
 from Bio import SeqIO
 from champ.adapters_cython import simple_hamming_distance
 from collections import defaultdict
+from multiprocessing import Pool
 import editdistance
 import gzip
 import itertools
@@ -12,7 +13,6 @@ import pysam
 import random
 import subprocess
 import yaml
-import shlex
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def main(clargs):
     """
     fastq_filenames = [os.path.join(clargs.fastq_directory, directory) for directory in os.listdir(clargs.fastq_directory)]
     fastq_files = FastqFiles(fastq_filenames)
-#FLETCHER DEBUG TOOLS    
+    #FLETCHER DEBUG TOOLS    
     print fastq_filenames
     print dir (fastq_files)
     print "Fastq Files"
@@ -39,18 +39,21 @@ def main(clargs):
     print list(fastq_files.single)
     print "paired:"
     print list(fastq_files.paired)
-#END FLETCHER DEBUG TOOLS
+    #END FLETCHER DEBUG TOOLS
 
     read_names_given_seq = {}
     if clargs.include_side_1:
         usable_read = lambda record_id: True
     else:
         usable_read = lambda record_id: determine_side(record_id) == '2'
-#FLETCHER    
-#    if clargs.single_read:
-#        unpaired_align = True
-#    else:
-#        unpaired_align = False
+    #FLETCHER    
+    #    if clargs.single_read:
+    #        unpaired_align = True
+    #    else:
+    #        unpaired_align = False
+
+    #JG this needs to be set to to False for PhiX Bowtie
+    clargs.single_read = False
 
     if clargs.log_p_file_path:
         # FLETCHER: The log P file is a pickle file with the least log likelihood
@@ -62,8 +65,8 @@ def main(clargs):
         write_read_names_by_sequence(read_names_given_seq, os.path.join(clargs.output_directory, 'read_names_by_seq.txt'))
 
     if not read_names_given_seq:
-    	 #We already generated read names by seq in a previous run and aren't recreating them this time,
-         #so we need to load them from disk
+        #We already generated read names by seq in a previous run and aren't recreating them this time,
+        #so we need to load them from disk
         with open(os.path.join(clargs.output_directory, "read_names_by_seq.txt")) as f:
             read_names_given_seq = {}
             for line in f:
@@ -84,26 +87,30 @@ def main(clargs):
             targets = yaml.load(f)
 
         log.info("Creating perfect target read name files.")
-        for target_name, perfect_read_names in determine_perfect_target_reads(targets, read_names_given_seq):
+        #for target_name, perfect_read_names in determine_perfect_target_reads(targets, read_names_given_seq):
+        #JG Use multiprocessing map function
+        for target_name, perfect_read_names in determine_perfect_target_reads_map(targets, read_names_given_seq):
             formatted_name = 'perfect_target_%s' % target_name.replace('-', '_').lower()
             write_read_names(perfect_read_names, formatted_name, clargs.output_directory, usable_read)
 
         # find imperfect usable target reads
         log.info("Creating target read name files.")
-        for target_name, read_names in determine_target_reads(targets, read_names_given_seq):
+        #for target_name, read_names in determine_target_reads(targets, read_names_given_seq):
+        #JG Use multiprocessing map function
+        for target_name, read_names in determine_target_reads_map(targets, read_names_given_seq):
             formatted_name = 'target_%s' % target_name.replace('-', '_').lower()
             write_read_names(read_names, formatted_name, clargs.output_directory, usable_read)
 
     if clargs.phix_bowtie:
-        # This function aligns the NGS Fastq sequences with a reference genome using bowtie2.
-        # For the Spies Lab, this is a synthetic genome index made from the G4 library sequences
+        #This function aligns the NGS Fastq sequences with a reference genome using bowtie2.
+        #For the Spies Lab, this is a synthetic genome index made from the G4 library sequences
         
         log.info("Finding phiX reads.")
         read_names = find_reads_using_bamfile(clargs.phix_bowtie, fastq_files, clargs.single_read)
         write_read_names(read_names, 'phix', clargs.output_directory, usable_read)
 
-	#Saves the names of every read in the Fastq files to a text file
-	log.info("Parsing and saving all read names to disk.")
+    #Saves the names of every read in the Fastq files to a text file
+    log.info("Parsing and saving all read names to disk.")
     write_all_read_names(fastq_files, os.path.join(clargs.output_directory, 'all_read_names.txt'), usable_read, clargs.single_read)
 
 
@@ -164,7 +171,8 @@ class FastqReadClassifier(object):
     def __init__(self, bowtie_path):
         clean_path = bowtie_path.rstrip(os.path.sep)
         self.name = os.path.basename(clean_path)
-        self._common_command = ('bowtie2', '--local', '-p 64', '--no-unal', '-x %s' % clean_path)
+        #JG I had to set this to 1/2 # of CPUs available to keep from running out of memory
+        self._common_command = ('bowtie2', '--local', '-p 40', '--no-unal', '-x %s' % clean_path)
     
     def paired_call(self, fastq_file_1, fastq_file_2):
         command = self._common_command + ('-1 ' + fastq_file_1,
@@ -197,7 +205,7 @@ class FastqReadClassifier(object):
 
 
 def find_reads_using_bamfile(bamfile_path, fastq_files, single_read):
-#FLETCHER    
+    #FLETCHER    
     classifier = FastqReadClassifier(bamfile_path)
     read_names = set()
     if len(fastq_files) == 1:
@@ -210,7 +218,7 @@ def find_reads_using_bamfile(bamfile_path, fastq_files, single_read):
             for read in classifier.paired_call(file1, file2):
                 read_names.add(read)
         return read_names
-#FLETCHER
+    #FLETCHER
 
 
 def get_max_edit_dist(target):
@@ -223,16 +231,13 @@ def rand_seq(seq_len):
 
 
 def determine_target_reads(targets, read_names_given_seq):
-	target_len = 0
+
     for target_name, target_sequence in targets.items():
-    	if len(target_sequence) != target_len:
-    		max_edit_dist = get_max_edit_dist(target_sequence)
-    		target_len = len(target_sequence)
+        max_edit_dist = get_max_edit_dist(target_sequence)
         for seq, read_names in read_names_given_seq.items():
             if len(seq) > len(target_sequence):
-
                 min_edit_dist = min(editdistance.eval(target_sequence, seq[i:i + len(target_sequence)])
-                                    for i in xrange(len(seq) - len(target_sequence)))
+                                      for i in xrange(len(seq) - len(target_sequence)))
             else:
                 min_edit_dist = editdistance.eval(target_sequence, seq)
             if min_edit_dist <= max_edit_dist:
@@ -254,7 +259,7 @@ def write_read_names_by_sequence(read_names_given_seq, out_file_path):
 def write_all_read_names(fastq_files, out_file_path, usable_read, single_read):
     # Opens all FastQ files, finds every read name, and saves it in a file without any other data
     with open(out_file_path, 'w') as out:
-#FLETCHER        
+        #FLETCHER        
         if len(fastq_files) == 1:
             for file in fastq_files.single:
                 for record in filter(lambda record: usable_read(record.id), parse_fastq_lines(file)):
@@ -266,7 +271,7 @@ def write_all_read_names(fastq_files, out_file_path, usable_read, single_read):
                 # and read names that were only found in the first run
                 for record in filter(lambda record: usable_read(record.id), parse_fastq_lines(second)):
                     out.write(record.name + '\n')
-#FLETCHER
+        #FLETCHER
 
 def determine_perfect_target_reads(targets, read_names_by_seq):
     for target_name, target_sequence in targets.items():
@@ -288,6 +293,120 @@ def get_max_ham_dists(min_len, max_len):
     return max_ham_dists
 
 
+def reads_initializer(_read_names_given_seq):
+    """Initialize multiprocess worker
+
+    Parameters
+    ----------
+    _read_names_given_seq : dict
+        Sequences and corresponding read names (flow cell positions) 
+
+    Returns
+    -------
+    None
+    """
+    global read_names_given_seq
+    read_names_given_seq = _read_names_given_seq
+
+
+def perfect_reads_worker(target):
+    """Determine perfect read name of a target sequence
+
+    Parameters
+    ----------
+    target: tuple Tuple(str, str)
+        Target name and sequence
+
+    Returns
+    -------
+    tuple Tuple(str, list)
+        Target name and list of perfect read names
+
+    """
+    target_name, target_sequence = target
+    perfect_read_names = []
+    for seq, read_names in read_names_given_seq.items():
+        if target_sequence in seq:
+            perfect_read_names += read_names
+    return (target_name, perfect_read_names)
+ 
+
+def imperfect_reads_worker(target):
+    """Determine read name of a target sequence
+
+    Parameters
+    ----------
+    target: tuple Tuple(str, str)
+        Target name and sequence
+
+    Returns
+    -------
+    retval: tuple Tuple(str, list)
+        Target name and list of read names
+
+    """
+    target_name, target_sequence = target
+    max_edit_dist = get_max_edit_dist(target_sequence)
+    for seq, read_names in read_names_given_seq.items():
+        if len(seq) > len(target_sequence):
+            min_edit_dist = min(editdistance.eval(target_sequence, seq[i:i + len(target_sequence)])
+                                  for i in xrange(len(seq) - len(target_sequence)))
+        else:
+            min_edit_dist = editdistance.eval(target_sequence, seq)
+        if min_edit_dist <= max_edit_dist:
+            return (target_name, read_names)
+
+
+def determine_perfect_target_reads_map(targets, read_names_given_seq):
+    """Map function to determine perfect target read names
+
+    Parameters
+    ----------
+    target: dict
+        Target names and sequences
+
+    read_names_given_seq : dict
+        Sequences and corresponding read names (flow cell positions) 
+
+    Returns
+    -------
+    perfect_target_reads: list
+        List of tuples containing target names and corresponding list of perfect read names
+
+    """
+    pool = Pool(initializer=reads_initializer, initargs=[read_names_given_seq])
+    perfect_target_reads = pool.map(perfect_reads_worker, targets.items())
+    pool.close()
+    pool.terminate()
+    perfect_target_reads = [i for i in perfect_target_reads if i != None]
+    return perfect_target_reads
+
+
+def determine_target_reads_map(targets, read_names_given_seq):
+    """Map function to determine target read names
+
+    Parameters
+    ----------
+    target: dict
+        Target names and sequences
+
+    read_names_given_seq : dict
+        Sequences and corresponding read names (flow cell positions) 
+
+    Returns
+    -------
+    target_reads: list
+        List of tuples containing target names and corresponding list of read names
+
+    """
+    pool = Pool(initializer=reads_initializer, initargs=[read_names_given_seq])
+    target_reads = pool.map(imperfect_reads_worker, targets.items())
+    pool.close()
+    pool.terminate()
+    target_reads = [i for i in target_reads if i != None]
+    return target_reads
+
+
 def determine_sequences_of_read_names(min_len, max_len, log_p_struct, fastq_files, usable_read):
     # --------------------------------------------------------------------------------
     # Pair fpaths and classify seqs
@@ -295,8 +414,8 @@ def determine_sequences_of_read_names(min_len, max_len, log_p_struct, fastq_file
     max_ham_dists = get_max_ham_dists(min_len, max_len)
     log.debug("Max ham dists: %s" % str(max_ham_dists))
     read_names_given_seq = defaultdict(list)
-#FLETCHER EDIT FOR SINGLE/PAIRED READS
-#    if len(fastq_files) == 2:
+    #FLETCHER EDIT FOR SINGLE/PAIRED READS
+    #    if len(fastq_files) == 2:
     for fpath1, fpath2 in fastq_files.paired: #fpath1, fpath2 are read1 and read2 fastq.gzips
         log.debug('{}, {}'.format(*map(os.path.basename, (fpath1, fpath2))))
         discarded = 0
@@ -316,26 +435,26 @@ def determine_sequences_of_read_names(min_len, max_len, log_p_struct, fastq_file
         found = total - discarded
         log.debug('Found {} of {} ({:.1f}%)'.format(found, total, 100 * found / float(total)))
     return read_names_given_seq
-#    elif len(fastq_files) == 1:  
-#        for file in fastq_files.single:
-#            log.debug('{}, {}'.format(*map(os.path.basename, (file))))
-#            discarded = 0
-#            total = 0
-#            for i, (rec1) in enumerate(
-#                itertools.izip(parse_fastq_lines(file))
-#            ):
-#               if not usable_read(rec1.id):
-#                   continue
-#               total += 1
-#               seq = classify_seq(rec, min_len, max_len, max_ham_dists, log_p_struct)
-#               if seq:
-#                   read_names_given_seq[seq].append(str(rec.id))
-#               else:
-#                   discarded += 1
-#            found = total - discarded
-#            log.debug('Found {} of {} ({:.1f}%)'.format(found, total, 100 * found / float(total)))
-#        return read_names_given_seq
-#FLETCHER END EDIT
+    #    elif len(fastq_files) == 1:  
+    #        for file in fastq_files.single:
+    #            log.debug('{}, {}'.format(*map(os.path.basename, (file))))
+    #            discarded = 0
+    #            total = 0
+    #            for i, (rec1) in enumerate(
+    #                itertools.izip(parse_fastq_lines(file))
+    #            ):
+    #               if not usable_read(rec1.id):
+    #                   continue
+    #               total += 1
+    #               seq = classify_seq(rec, min_len, max_len, max_ham_dists, log_p_struct)
+    #               if seq:
+    #                   read_names_given_seq[seq].append(str(rec.id))
+    #               else:
+    #                   discarded += 1
+    #            found = total - discarded
+    #            log.debug('Found {} of {} ({:.1f}%)'.format(found, total, 100 * found / float(total)))
+    #        return read_names_given_seq
+    #FLETCHER END EDIT
 
 def determine_side(record_id):
     """ 
