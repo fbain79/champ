@@ -115,7 +115,7 @@ THETA_IMAGE
 
 
 def source_extract(base_file):
-    command = '/usr/bin/sextractor {base_file}.fits -PARAMETERS_NAME spot.param -CATALOG_NAME {base_file}.clusters.se -CHECKIMAGE_TYPE OBJECTS -CHECKIMAGE_NAME {base_file}.model'
+    command = '/usr/bin/source-extractor {base_file}.fits -PARAMETERS_NAME spot.param -CATALOG_NAME {base_file}.clusters.se -CHECKIMAGE_TYPE OBJECTS -CHECKIMAGE_NAME {base_file}.model'
     # Don't print any output
     with open('/dev/null', 'w') as devnull:
         command = command.format(base_file=base_file).split(' ')
@@ -179,6 +179,7 @@ def find_clusters_source_extractor(worker_pool, image_files):
         # Set up a worker for each HDF5 file like before
         base_files = [base_file for h5_filename in image_files.directories
                       for base_file in get_base_file_names(h5_filename)]
+#FLETCHER DEBUG        log.info("Base File is: %s" % base_files)
         worker_pool.map_async(source_extract, base_files).get(timeout=sys.maxint)
         log.info("Done with Source Extractor! Took %s seconds" % round(time.time() - start, 0))
     log.debug("Deleting .fits and .model files")
